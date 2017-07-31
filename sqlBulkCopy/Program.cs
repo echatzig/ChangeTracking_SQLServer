@@ -8,7 +8,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Z.BulkOperations;
 
 namespace sqlBulkCopy
 {
@@ -18,18 +17,20 @@ namespace sqlBulkCopy
         {
             BulkCopy b = new BulkCopy();
 
-            b.PerformBulkCopyDifferentSchema();
-            //b.PerformIncremental();
+            //b.PerformBulkCopyDifferentSchema();
+            //
+            // we need to find a way to trigger U,D since we currently treat them as I !!
+            b.PerformIncremental();
 
             //b.TestDelete();
-
+            //b.testSqlCommandBuilder();
         }
     }
 
     class BulkCopy
     {
-        string srcConnStr = @"Data Source=A2DBC02....";
-        string dstConnStr = @"Data Source=u....";
+        string srcConnStr = @"Data Source=...";
+        string dstConnStr = @"Data Source=....";
 
 
 
@@ -153,7 +154,7 @@ pa' end) as 'BookingOwned'
 
                 //----
 
-                string sql3 = @"select EndVersionID = CHANGE_TRACKING_CURRENT_VERSION()";
+                string sql3 = @"select StartVersionID = CHANGE_TRACKING_CURRENT_VERSION()";
                 SqlCommand sqlCmd3 = new SqlCommand(sql3, srcConn, fatUglyTransaction);
                 vStartVersionID = (Int64)sqlCmd3.ExecuteScalar();
 
@@ -188,6 +189,7 @@ pa' end) as 'BookingOwned'
                         bulkCopy.NotifyAfter = 1000;
                         bulkCopy.SqlRowsCopied +=
                             new SqlRowsCopiedEventHandler(bulkCopy_SqlRowsCopied);
+                        bulkCopy.BulkCopyTimeout = 12000; // 200 minutes timeout !!!!!
 
                         //bulkCopy.ColumnMappings.Add("ProductID", "ProductID");
                         //bulkCopy.ColumnMappings.Add("ProductName", "Name");
@@ -214,10 +216,10 @@ pa' end) as 'BookingOwned'
 
         string sql_incr = @"
 SELECT  
-		Res.resID as BookingID, 
-		res.ad as 'Amendments', 
-		res.rs as 'BookingStatus',
-		res.cs as 'Cancellations', 
+		ct.resID as BookingID, 
+		ct.ad as 'Amendments', 
+		ct.rs as 'BookingStatus',
+		ct.cs as 'Cancellations', 
 		(CASE WHEN isDate(resdate) = 0 THEN null else CAST(resdate as datetime) END) as 'BookingDate', 
 		restime as 'BookingTime', 
 		buycur as 'BuyCurrency', 
@@ -319,6 +321,7 @@ and res.RS=ct.RS
 and res.CS=ct.CS
 and res.AD=ct.AD
 WHERE (SELECT MAX(v) FROM (VALUES(ct.SYS_CHANGE_VERSION), (ct.SYS_CHANGE_CREATION_VERSION)) AS VALUE(v)) <= @EndVersionID
+order by ct.SYS_CHANGE_VERSION
 
         ";
 
@@ -369,15 +372,22 @@ WHERE (SELECT MAX(v) FROM (VALUES(ct.SYS_CHANGE_VERSION), (ct.SYS_CHANGE_CREATIO
                 {
                     reader.GetValues(obj);
 
-                    //// if (reader.GetSqlChars(fldOPER).Value[0] == 'D')
-                    ////     continue;
+                    //if (reader.GetSqlChars(fldOPER).Value[0] == 'D')
+                    //    continue;
                     //// if (reader.GetSqlChars(fldOPER).Value[0] == 'U')
                     ////     continue;
 
                     var dr = dt.Rows.Add(obj);
 
+                    //var idx = dt.Rows.Count;
+                    //dr = dt.Rows[idx - 1];
+
+                    Console.WriteLine(reader.GetSqlChars(fldOPER).Value[0]);
+
                     if (reader.GetSqlChars(fldOPER).Value[0] == 'I')
+                    {
                         /* no-op */
+                    }
                     if (reader.GetSqlChars(fldOPER).Value[0] == 'D')
                     {
                         dr.AcceptChanges();
@@ -414,39 +424,126 @@ WHERE (SELECT MAX(v) FROM (VALUES(ct.SYS_CHANGE_VERSION), (ct.SYS_CHANGE_CREATIO
                             new SqlConnection(dstConnStr);
                 dstConn.Open();
 
-                SqlDataAdapter da = new SqlDataAdapter("select * from _factBookings", dstConn);
+                ///
+                var fatUglyTransaction = dstConn.BeginTransaction(IsolationLevel.Serializable);
+                ///
+
+
+                var sqlCmd = new SqlCommand("select * from _factBookings", dstConn, fatUglyTransaction);
+                SqlDataAdapter da = new SqlDataAdapter(sqlCmd);
                 var sqlCB = new SqlCommandBuilder(da);
+                sqlCB.ConflictOption = ConflictOption.OverwriteChanges; // generate UPD/DEL commands using PK only in the WHERE clause
 
-                SqlCommand delCmd = new SqlCommand(@"
-                    delete from _factBookings 
-                    where 
-                            BookingID       = @BookingID
-                    and     Amendments      = @Amendments   
-                    and     BookingStatus   = @BookingStatus
-                    and     Cancellations   = @Cancellations
-                ", dstConn);
+                //SqlCommand delCmd = new SqlCommand(@"
+                //    delete from _factBookings 
+                //    where 
+                //            BookingID       = @BookingID
+                //    and     Amendments      = @Amendments   
+                //    and     BookingStatus   = @BookingStatus
+                //    and     Cancellations   = @Cancellations
+                //", dstConn, fatUglyTransaction);
+                //
+                //delCmd.Parameters.Add(new SqlParameter("@BookingID", SqlDbType.VarChar));
+                //delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
+                //delCmd.Parameters["@BookingID"].SourceColumn = "BookingID";
+                //
+                //delCmd.Parameters.Add(new SqlParameter("@Amendments", SqlDbType.TinyInt));
+                //delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
+                //delCmd.Parameters["@Amendments"].SourceColumn = "Amendments";
+                //
+                //delCmd.Parameters.Add(new SqlParameter("@BookingStatus", SqlDbType.TinyInt));
+                //delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
+                //delCmd.Parameters["@BookingStatus"].SourceColumn = "BookingStatus";
+                //
+                //delCmd.Parameters.Add(new SqlParameter("@Cancellations", SqlDbType.TinyInt));
+                //delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
+                //delCmd.Parameters["@Cancellations"].SourceColumn = "Cancellations";
+                //
+                //da.DeleteCommand = delCmd;
 
-                delCmd.Parameters.Add(new SqlParameter("@BookingID", SqlDbType.VarChar));
-                delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
-                delCmd.Parameters["@BookingID"].SourceColumn = "BookingID";
+                da.DeleteCommand = sqlCB.GetDeleteCommand();
+                da.UpdateCommand = sqlCB.GetUpdateCommand();
+                da.InsertCommand = sqlCB.GetInsertCommand();
 
-                delCmd.Parameters.Add(new SqlParameter("@Amendments", SqlDbType.TinyInt));
-                delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
-                delCmd.Parameters["@Amendments"].SourceColumn = "Amendments";
-
-                delCmd.Parameters.Add(new SqlParameter("@BookingStatus", SqlDbType.TinyInt));
-                delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
-                delCmd.Parameters["@BookingStatus"].SourceColumn = "BookingStatus";
-
-                delCmd.Parameters.Add(new SqlParameter("@Cancellations", SqlDbType.TinyInt));
-                delCmd.Parameters["@BookingID"].SourceVersion = DataRowVersion.Original;
-                delCmd.Parameters["@Cancellations"].SourceColumn = "Cancellations";
-
-                da.DeleteCommand = delCmd;
+                da.DeleteCommand.Transaction = fatUglyTransaction;
+                da.UpdateCommand.Transaction = fatUglyTransaction;
+                da.InsertCommand.Transaction = fatUglyTransaction;
 
                 Console.WriteLine(da.DeleteCommand.CommandText);
+                Console.WriteLine(da.UpdateCommand.CommandText);
+                Console.WriteLine(da.InsertCommand.CommandText);
 
-                da.Update(dt);
+                //var delRow = dt.Select(null, null, DataViewRowState.Deleted).FirstOrDefault();
+                //DataRow[] delRows = new DataRow[1];
+                //delRows[0] = delRow;
+                //da.Update(delRows);
+
+                //var delRows = dt.Select(null, null, DataViewRowState.Deleted);
+
+
+                int counter = 0;
+                DataTable dtCp = dt.Clone();
+                dtCp.Clear();
+
+
+
+                // Stream fs = new FileStream(  "log.txt", FileMode.OpenOrCreate, FileAccess.ReadWrite);
+                // StreamWriter sw = new StreamWriter(fs);
+                // 
+
+                foreach ( DataRow dr in dt.Rows )
+                {
+                    DataRow[] delRWs = new DataRow[1];
+                    dtCp.ImportRow(dr);
+                    DataRow drr = dtCp.Rows[0];
+
+                    delRWs[0] = drr;
+                    counter++;
+
+                    try
+                    {
+                        da.Update(delRWs);
+                    }
+                    catch( DBConcurrencyException ex )
+                    {
+                        Console.WriteLine("count: {0}", counter);
+                        Console.WriteLine(drr.RowState);
+                        if (drr.RowState == DataRowState.Deleted)
+                        {
+                            Console.WriteLine(drr[0, DataRowVersion.Original]);
+                            Console.WriteLine(drr[1, DataRowVersion.Original]);
+                            Console.WriteLine(drr[2, DataRowVersion.Original]);
+                            Console.WriteLine(drr[3, DataRowVersion.Original]);
+                        }
+                        else
+                        {
+                            Console.WriteLine(drr[0]);
+                            Console.WriteLine(drr[1]);
+                            Console.WriteLine(drr[2]);
+                            Console.WriteLine(drr[3]);
+                        }
+                        //foreach (var c in dt.PrimaryKey)
+                        //{
+                        //    if (drr.RowState == DataRowState.Deleted)
+                        //    {
+                        //        Console.WriteLine(drr[c.Ordinal, DataRowVersion.Original]);
+                        //    }
+                        //    else
+                        //    {
+                        //        Console.WriteLine(drr[c.Ordinal]);
+                        //    }
+                        //}
+
+
+                        Console.WriteLine(ex.Message);
+                    }
+                    dtCp.Clear();
+
+                }
+
+                //da.Update(dt);
+
+                fatUglyTransaction.Commit();
 
                 reader.Close();
 
@@ -502,21 +599,81 @@ WHERE (SELECT MAX(v) FROM (VALUES(ct.SYS_CHANGE_VERSION), (ct.SYS_CHANGE_CREATIO
                 //
                 DataTable table = GetTable();
 
-            table.AcceptChanges();
+           // table.AcceptChanges();
 
-
+            //
             DataRow row = table.Rows[0];
             //
             // Delete the first row.
             // ... This means the second row is the first row.
             //
 
+            row.AcceptChanges();
                 row.Delete();
-                //
-                // Display the new first row.
-                //
-                row = table.Rows[0];
-                Console.WriteLine(row["Name", DataRowVersion.Original]);
+
+            DataRow[] delRows = table.Select(null, null, DataViewRowState.Deleted);
+
+            //
+            // Display the new first row.
+            //
+            row = table.Rows[0];
+            Console.WriteLine(row.RowState);
+            Console.WriteLine(row["Name", DataRowVersion.Original]);
+            
         }
+
+        internal void testSqlCommandBuilder()
+        {
+            using (SqlConnection connection = new SqlConnection(srcConnStr))
+            {
+                connection.Open();
+                SqlCommand command = new SqlCommand("SELECT top 10 * FROM trCreditControlRemmit_STEST", connection);
+                SqlDataAdapter adapter = new SqlDataAdapter(command);
+
+                SqlCommandBuilder builder = new SqlCommandBuilder(adapter);
+                builder.ConflictOption = ConflictOption.OverwriteChanges; // generate UPD/DEL commands using PK only in the WHERE clause
+                
+
+                DataSet dataset = new DataSet();
+                adapter.Fill(dataset);
+
+                string line = new string('-', 40) + Environment.NewLine;
+                Console.WriteLine(builder.GetUpdateCommand().CommandText);
+                Console.WriteLine(line);
+                Console.WriteLine(builder.GetDeleteCommand().CommandText);
+                Console.WriteLine(line);
+                Console.WriteLine(builder.GetInsertCommand().CommandText);
+                Console.WriteLine(line);
+                Console.ReadLine();
+
+                // insert a row
+                //SqlCommand insert = builder.GetInsertCommand();
+                //insert.Parameters["@P1"].Value = "PAUKI";
+                //insert.Parameters["@P2"].Value = "PAULY’S PIES";
+                //insert.Parameters["@P3"].Value = "Paul Kimmel";
+                //insert.Parameters["@P4"].Value = "Oh Large One!";
+                //insert.Parameters["@P5"].Value = "1313 Mockingbird Ln.";
+                //insert.Parameters["@P6"].Value = "Okemos";
+                //insert.Parameters["@P7"].Value = "Michigan";
+                //insert.Parameters["@P8"].Value = "48864";
+                //insert.Parameters["@P9"].Value = "USA";
+                //insert.Parameters["@P10"].Value = "(517) 555-1234";
+                //insert.Parameters["@P11"].Value = "(517) 555-1234";
+                //
+                //insert.ExecuteNonQuery();
+                //
+                //adapter.Fill(dataset);
+                //
+                //DataRow[] rows = dataset.Tables[0].Select("CustomerID = ’PAUKI’");
+                //if (rows.Length == 1)
+                //    Console.WriteLine(rows[0]["CompanyName"]);
+
+                Console.ReadLine();
+            }
+        }
+
+
     }
+
+
 }
